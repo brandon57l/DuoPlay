@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Transcription synchronisée YouTube</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Fomantic UI -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.4/dist/semantic.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+  <style>
+    /* Classes utilitaires pour le flex (remplaçant Bootstrap) */
+    .d-flex {
+      display: flex;
+    }
+    .flex-column {
+      flex-direction: column;
+    }
+    .align-items-end {
+      align-items: flex-end;
+    }
+    .align-items-start {
+      align-items: flex-start;
+    }
+    .mb-0 {
+      margin-bottom: 0;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      height: 100%;
+      font-family: 'Poppins', Arial, sans-serif;
+      background-color: #121212 !important;
+      color: #e0e0e0;
+      overflow: hidden;
+    }
+    /* Disposition principale */
+    body {
+      display: flex;
+      flex: 1;
+      flex-direction: row;
+      overflow: hidden;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 640px;
+      margin: 0 auto;
+      z-index: 0;
+    }
+    /* Zone du player */
+    #player-container {
+      position: relative;
+      width: 100%;
+      padding-top: 56.25%; /* Ratio 16:9 */
+      background-color: #000;
+      box-shadow: 0px 10px 85px rgba(255, 23, 23, 0.25);
+    }
+    #player {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .transcript {
+      flex: 1;
+      border-top: 1px solid #333;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+      /* Masquer les scrollbars */
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .transcript::-webkit-scrollbar {
+      display: none;
+    }
+    .segment {
+      padding: 15px;
+      border-bottom: 1px solid #444;
+      transition: background-color 0.3s;
+    }
+    .active {
+      background-color: #333333;
+    }
+    .chinese {
+      font-weight: bold;
+      margin-bottom: 5px;
+      color: #f1c40f;
+    }
+    .english {
+      color: #bbb;
+    }
+    /* Formulaire dark */
+    form {
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+    }
+    form label {
+      margin-bottom: 5px;
+    }
+    form input[type="text"] {
+      padding: 10px;
+      font-size: 16px;
+      border: 1px solid #555;
+      border-radius: 4px;
+      background-color: #2e2e2e;
+      color: #e0e0e0;
+      margin-bottom: 10px;
+    }
+    form button {
+      padding: 10px;
+      font-size: 16px;
+      background-color: #007BFF;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+    }
+    form button:hover {
+      background-color: #0056b3;
+      cursor: pointer;
+    }
+    .error {
+      color: #e57373;
+      margin-bottom: 10px;
+    }
+    .inverted.buttons {
+      margin: 15px !important;
+    }
+    /* Navbar minimaliste */
+    .navbar {
+      background: rgba(255, 255, 255, 0.2);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+      padding: 10px 20px;
+      z-index: 1;
+      border-radius: 30px 0 0 0;
+    }
+    .navbar-brand {
+      font-weight: 500;
+      color: #fff !important;
+    }
+    /* Chat container */
+    .chat-container {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 30%;
+      z-index: 100;
+      transition: width 0.2s ease-out, transform 0.2s ease-out;
+      box-shadow: 0 1px 2px rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+      background: linear-gradient(135deg, #121212, rgba(32, 19, 19, 0.932));
+      border-radius: 30px 0 0 30px;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      margin: 0;
+    }
+    /* Resizer */
+    .resizer {
+      position: absolute;
+      left: -13px; /* Pour dépasser du container */
+      top: 50%;
+      transform: translateY(-50%);
+      width: 8px;
+      height: 65px;
+      cursor: ew-resize;
+      z-index: 100;
+      border-radius: 20px;
+      background: rgba(158, 158, 158, 0.3);
+    }
+    .resize-grab {
+      position: absolute;
+      left: 60%;
+      top: 50%;
+      transform: translate(-40%, -50%); /* Déplace légèrement vers la droite */
+      width: 50px;
+      height: 90px;
+      background-color: #0056b3;
+      opacity: 0;
+    }
+
+    /* Image de fond du chat */
+    .chat-tree {
+      opacity: 80%;
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background: url("{{ url_for('static', filename='chinese-tree.png') }}") top right no-repeat;
+      background-size: 85% auto;
+      background-position: right -50px;
+      z-index: 0;
+      overflow: hidden;
+    }
+    /* Zone de chat */
+    .chat-area {
+      flex: 1;
+      margin: auto;
+      overflow-y: auto;
+      padding: 20px 20px 20px 2px;
+      max-width: 1000px;
+      width: 100%;
+    }
+    /* Bulles de message */
+    .message {
+      max-width: 90%;
+      margin-bottom: 10px;
+      padding: 12px 18px;
+      border-radius: 20px;
+      opacity: 0;
+      animation: fadeIn 0.4s forwards;
+      z-index: 1;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .message.sent {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    .message.received {
+      /* Par défaut, pour les messages reçus, aucun fond particulier */
+    }
+    .message p {
+      margin-bottom: 0 !important;
+    }
+    /* Formulaire d'envoi du chat */
+    .chat-input-wrapper {
+      padding: 15px 20px;
+      border-top: 1px solid rgba(255, 255, 255, 0.3);
+      z-index: 1;
+    }
+    .chat-input {
+      width: 100%;
+      padding: 12px 18px;
+      border: none;
+      border-radius: 30px;
+      outline: none;
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+    .chat-input::placeholder {
+      color: rgba(255, 255, 255, 0.7);
+    }
+    .send-btn {
+      background: none;
+      border: none;
+      outline: none;
+      color: #fff;
+      font-size: 1.5rem;
+      cursor: pointer;
+      margin-left: 8px;
+      opacity: 65%;
+    }
+    .send-btn:hover {
+      color: #ddd;
+    }
+
+    /* Adaptation pour mobile */
+    @media (max-width: 768px) {
+      .chat-container {
+        width: 95% !important;
+      }
+
+
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    {% if error_message %}
+      <p class="error">{{ error_message }}</p>
+    {% endif %}
+
+    {% if youtube_url %}
+      <!-- Player -->
+      <div id="player-container">
+        <div id="player"></div>
+      </div>
+      
+      <!-- Boutons de contrôle -->
+      <div class="ui icon inverted buttons">
+        <button id="btn-backward" class="mini ui inverted basic button">
+          <i class="step backward icon"></i>
+        </button>
+        <button id="btn-play" class="mini ui inverted basic button">
+          <i class="play icon"></i>
+        </button>
+        <button id="btn-pause" class="mini ui inverted basic button">
+          <i class="pause right icon"></i>
+        </button>
+        <button id="btn-forward" class="mini ui inverted basic button">
+          <i class="step forward icon"></i>
+        </button>
+      </div>
+      
+      <!-- Transcription -->
+      <div id="transcript" class="transcript">
+        {% if transcript_data_en and transcript_data_ch %}
+          {% set count = transcript_data_en|length %}
+          {% for i in range(count) %}
+            <div class="segment" data-start="{{ transcript_data_en[i].start }}" data-duration="{{ transcript_data_en[i].duration }}">
+              <p class="chinese">{{ transcript_data_ch[i].text }}</p>
+              <p class="english">{{ transcript_data_en[i].text }}</p>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p>Aucune transcription disponible.</p>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="chat-container">
+    <!-- Handle de redimensionnement -->
+    <div class="resizer"><div class="resize-grab"></div></div>
+    
+    <!-- Barre de navigation -->
+    <nav class="navbar navbar-expand">
+      <a class="navbar-brand" href="#">SpotQing - Assistant</a>
+    </nav>
+    
+    <!-- Image de fond décorative -->
+    <!-- <div class="chat-tree"></div> -->
+    
+    <!-- Zone de chat -->
+    <div class="chat-area d-flex flex-column" id="chat-box">
+      {% for message in messages %}
+      <div class="d-flex flex-column {% if message.sender == current_user %}align-items-end{% else %}align-items-start{% endif %}">
+        <div class="message {% if message.sender == current_user %}sent{% else %}received{% endif %}">
+          <p class="mb-0">{{ message.text }}</p>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Formulaire d'envoi -->
+    <div class="chat-input-wrapper">
+      <form id="message-form" action="{{ url_for('send_message') }}" method="post" class="d-flex">
+        <input type="text" name="message" id="message-input" class="chat-input" placeholder="Tapez votre message..." required>
+        <button type="submit" class="send-btn">
+          <i class="fas fa-paper-plane"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Scripts : YouTube, jQuery, Fomantic UI, Marked -->
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.4/dist/semantic.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    console.log("Script chargé");
+
+    // Gestion du scroll du transcript
+    var isUserScrolling = false;
+    var userScrollTimeout;
+    var transcriptContainer = document.getElementById('transcript');
+    transcriptContainer.addEventListener('scroll', function() {
+      isUserScrolling = true;
+      clearTimeout(userScrollTimeout);
+      userScrollTimeout = setTimeout(function() {
+        isUserScrolling = false;
+      }, 1000);
+    });
+
+    // Écouteurs sur les segments du transcript
+    function addSegmentClickListeners() {
+      var segments = document.querySelectorAll('.segment');
+      segments.forEach(function(segment, index) {
+        segment.addEventListener('click', function() {
+          var startTime = parseFloat(this.getAttribute('data-start'));
+          if (player && typeof player.seekTo === "function") {
+            player.seekTo(startTime, true);
+          }
+        });
+      });
+    }
+    if (document.readyState !== 'loading') {
+      addSegmentClickListeners();
+    } else {
+      document.addEventListener('DOMContentLoaded', addSegmentClickListeners);
+    }
+
+    // Synchronisation du transcript avec la vidéo
+    function syncTranscripts() {
+      if (player && typeof player.getCurrentTime === "function") {
+        var currentTime = player.getCurrentTime();
+        var segments = document.getElementsByClassName('segment');
+        for (var i = 0; i < segments.length; i++) {
+          var start = parseFloat(segments[i].getAttribute('data-start'));
+          var duration = parseFloat(segments[i].getAttribute('data-duration'));
+          var end = start + duration;
+          if (currentTime >= start && currentTime <= end) {
+            segments[i].classList.add('active');
+            if (!isUserScrolling) {
+              let scrollOffset = segments[i].offsetTop - transcriptContainer.offsetTop - 50;
+              transcriptContainer.scrollTo({ top: scrollOffset, behavior: "smooth" });
+            }
+          } else {
+            segments[i].classList.remove('active');
+          }
+        }
+      }
+    }
+
+    // Mise à jour avec requestAnimationFrame
+    function onPlayerReady(event) {
+      function update() {
+        syncTranscripts();
+        requestAnimationFrame(update);
+      }
+      update();
+    }
+
+    // Extraction de l'ID de la vidéo YouTube
+    var videoId = '';
+    {% if youtube_url %}
+      videoId = '{{ youtube_url.split("v=")[-1].split("&")[0] }}';
+    {% endif %}
+
+    var player;
+    function onYouTubeIframeAPIReady() {
+      if (!videoId) return;
+      var checkYTReady = setInterval(function () {
+        if (typeof YT !== "undefined" && typeof YT.Player !== "undefined") {
+          clearInterval(checkYTReady);
+          player = new YT.Player("player", {
+            width: "100%",
+            height: "360",
+            videoId: videoId,
+            events: { 'onReady': onPlayerReady },
+            playerVars: { 'controls': 1, 'rel': 0, 'modestbranding': 1, 'playsinline': 1 }
+          });
+        }
+      }, 500);
+    }
+
+    // Contrôle de la vidéo
+    document.addEventListener("DOMContentLoaded", function() {
+      document.getElementById("btn-backward").addEventListener("click", function() {
+        if (player && typeof player.getCurrentTime === "function") {
+          var currentTime = player.getCurrentTime();
+          player.seekTo(Math.max(currentTime - 10, 0), true);
+        }
+      });
+      document.getElementById("btn-play").addEventListener("click", function() {
+        if (player && typeof player.playVideo === "function") {
+          player.playVideo();
+        }
+      });
+      document.getElementById("btn-pause").addEventListener("click", function() {
+        if (player && typeof player.pauseVideo === "function") {
+          player.pauseVideo();
+        }
+      });
+      document.getElementById("btn-forward").addEventListener("click", function() {
+        if (player && typeof player.getCurrentTime === "function") {
+          var currentTime = player.getCurrentTime();
+          player.seekTo(currentTime + 10, true);
+        }
+      });
+    });
+
+    // Envoi des messages via AJAX
+    var conversationHistory = [];
+    $(document).ready(function(){
+      $("#message-form").submit(function(event){
+        event.preventDefault();
+        var messageText = $("#message-input").val().trim();
+        if(messageText === "") return;
+        
+        conversationHistory.push({ text: messageText, sender: 'user' });
+        var sentMessageHtml = `
+          <div class="d-flex flex-column align-items-end">
+            <div class="message sent">
+              <p class="mb-0">${messageText}</p>
+            </div>
+          </div>`;
+        $("#chat-box").append(sentMessageHtml);
+        $("#chat-box").animate({ scrollTop: $("#chat-box")[0].scrollHeight }, 500);
+        $("#message-input").val("");
+        
+        var historyToSend = JSON.stringify(conversationHistory.map(function(msg){
+          return { text: msg.text };
+        }));
+  
+        $.post("{{ url_for('send_message') }}", { message: messageText, history: historyToSend }, function(data){
+          if(data.gemini_response) {
+            var geminiResponseText = data.gemini_response.parts[0].text;
+            geminiResponseText = geminiResponseText.replace(/\[IMG\/([^\]]+)\]/g, 
+              '<a href="/IMG/$1" target="_blank">' +
+              '<img src="/IMG/$1" alt="Image" style="display:block;width:70%;max-width:550px; border: solid 2px #ccc; border-radius:12px; box-shadow:0 4px 8px rgba(0,0,0,0.2); margin:20px auto;">' +
+              '</a>');
+  
+            var formattedText = marked.parse(geminiResponseText);
+            var receivedMessageHtml = `
+              <div class="d-flex flex-column align-items-start">
+                <div class="message received">
+                  <p class="mb-0">${formattedText}</p>
+                </div>
+              </div>`;
+            $("#chat-box").append(receivedMessageHtml);
+            $("#chat-box").animate({ scrollTop: $("#chat-box")[0].scrollHeight }, 500);
+            conversationHistory.push({ text: geminiResponseText, sender: 'gemini' });
+          }
+        });
+      });
+    });
+  </script>
+  
+  <script>
+    const chatContainer = document.querySelector('.chat-container');
+    const resizer = document.querySelector('.resizer');
+
+    const minWidth = 200;
+    const maxWidth = 600;
+    let isDragging = false;
+    let initialX = 0;
+    let isClosed = false; // false = ouvert, true = fermé
+
+    resizer.addEventListener('mousedown', initResize);
+
+    function initResize(e) {
+      e.preventDefault();
+      initialX = e.clientX;
+      isDragging = false;
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    }
+
+    function onMouseMove(e) {
+      if (!isDragging && Math.abs(e.clientX - initialX) > 5) {
+        isDragging = true;
+        if (isClosed) openChat();
+      }
+      if (isDragging) {
+        requestAnimationFrame(() => {
+          const newWidth = window.innerWidth - e.clientX;
+          if (newWidth >= minWidth && newWidth <= maxWidth) {
+            chatContainer.style.width = newWidth + 'px';
+          } else if (newWidth < minWidth) {
+            chatContainer.style.width = minWidth + 'px';
+          } else if (newWidth > maxWidth) {
+            chatContainer.style.width = maxWidth + 'px';
+          }
+        });
+      }
+    }
+
+    function onMouseUp(e) {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      if (!isDragging) {
+        toggleChat();
+      } else {
+        const currentWidth = parseInt(chatContainer.style.width, 10);
+        if (currentWidth <= minWidth) closeChat();
+      }
+    }
+
+    function toggleChat() {
+      if (isClosed) openChat();
+      else closeChat();
+    }
+
+    function openChat() {
+      chatContainer.style.transition = 'transform 0.2s ease-out, width 0.2s ease-out';
+      chatContainer.style.transform = 'translateX(0)';
+      isClosed = false;
+    }
+
+    function closeChat() {
+      chatContainer.style.transition = 'transform 0.2s ease-out';
+      // Sur mobile, laisser environ 20px visibles
+      if (window.innerWidth < 768) {
+        chatContainer.style.transform = 'translateX(100%)';
+      } else {
+        chatContainer.style.transform = 'translateX(100%)';
+      }
+      isClosed = true;
+    }
+  </script>
+</body>
+</html>
