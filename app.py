@@ -1,7 +1,6 @@
 from flask import Flask, request, render_template, jsonify
 import requests
 from flask_sqlalchemy import SQLAlchemy
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, TooManyRequests
 import yt_dlp
 import time
 import re
@@ -51,52 +50,127 @@ def save_transcript_to_db(video_id, langue, texte):
     db.session.add(new_transcript)
     db.session.commit()
 
+def parse_vtt(vtt_text):
+    """
+    Parse le contenu d'un fichier VTT et retourne une liste de cues structurés
+    sous forme de dictionnaires avec les clés 'text', 'start' et 'duration'.
+    """
+    cues = []
+    lines = vtt_text.splitlines()
+    # Enlever la ligne d'en-tête "WEBVTT" si présente
+    if lines and lines[0].startswith("WEBVTT"):
+        lines = lines[1:]
+    # Supprimer les lignes vides
+    lines = [line.strip() for line in lines if line.strip() != ""]
+    # Expression régulière pour détecter la ligne de timecode
+    timecode_regex = re.compile(r"(\d{2}:\d{2}:\d{2}\.\d{3})\s-->\s(\d{2}:\d{2}:\d{2}\.\d{3})")
+    current_time = None
+    text_lines = []
+    for line in lines:
+        match = timecode_regex.match(line)
+        if match:
+            # S'il existe déjà un timecode en cours, sauvegarder le cue précédent
+            if current_time and text_lines:
+                h, m, s = map(float, current_time[0].split(':'))
+                start = h * 3600 + m * 60 + s
+                h2, m2, s2 = map(float, current_time[1].split(':'))
+                end = h2 * 3600 + m2 * 60 + s2
+                cues.append({"text": " ".join(text_lines), "start": start, "duration": end - start})
+            current_time = (match.group(1), match.group(2))
+            text_lines = []
+        else:
+            text_lines.append(line)
+    # Sauvegarder le dernier cue s'il existe
+    if current_time and text_lines:
+        h, m, s = map(float, current_time[0].split(':'))
+        start = h * 3600 + m * 60 + s
+        h2, m2, s2 = map(float, current_time[1].split(':'))
+        end = h2 * 3600 + m2 * 60 + s2
+        cues.append({"text": " ".join(text_lines), "start": start, "duration": end - start})
+    return cues
+
 def get_transcript(video_id):
-    """Récupère les transcriptions en anglais et en chinois, avec gestion des erreurs et stockage en base."""
+    """
+    Récupère les sous-titres en anglais et en chinois d'une vidéo YouTube via yt_dlp.
+    Si les sous-titres sont trouvés, ils sont convertis à partir du format VTT en une liste de cues,
+    sauvegardés en base et retournés.
+    """
     transcript_data_en = get_transcript_from_db(video_id, 'en')
     transcript_data_ch = get_transcript_from_db(video_id, 'zh')
 
-    # Si les transcriptions existent déjà, on les retourne
+    # Si les transcriptions existent déjà en base, les retourner
     if transcript_data_en and transcript_data_ch:
         return {"en": eval(transcript_data_en), "ch": eval(transcript_data_ch)}
 
-    # Sinon, on va les chercher via l'API YouTube
-    transcript_data_en, transcript_data_ch = [], []
-
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    ydl_opts = {
+        'skip_download': True,
+        'quiet': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['en', 'zh', 'zh-CN']
+    }
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+        
+        # Récupérer les sous-titres manuels et automatiques
+        subtitles = info.get("subtitles", {})
+        auto_captions = info.get("automatic_captions", {})
 
-        # Récupérer la transcription en anglais
-        try:
-            transcript_en = transcript_list.find_transcript(['en']).fetch()
-            save_transcript_to_db(video_id, 'en', str(transcript_en))  # Sauvegarde
-            transcript_data_en = transcript_en
-        except NoTranscriptFound:
-            transcript_data_en = [{"text": "Aucune transcription anglaise trouvée.", "start": 0, "duration": 0}]
-        except Exception as e:
-            transcript_data_en = [{"text": f"Erreur en anglais: {e}", "start": 0, "duration": 0}]
+        # Pour l'anglais, priorité aux sous-titres manuels
+        if 'en' in subtitles:
+            transcript_en_info = subtitles['en']
+        elif 'en' in auto_captions:
+            transcript_en_info = auto_captions['en']
+        else:
+            transcript_en_info = None
 
-        # Récupérer la transcription en chinois
-        try:
-            transcript_ch = transcript_list.find_transcript(['zh-CN', 'zh']).fetch()
-            save_transcript_to_db(video_id, 'zh', str(transcript_ch))  # Sauvegarde
-            transcript_data_ch = transcript_ch
-        except NoTranscriptFound:
-            transcript_data_ch = [{"text": "Aucune transcription chinoise trouvée.", "start": 0, "duration": 0}]
-        except Exception as e:
-            transcript_data_ch = [{"text": f"Erreur en chinois: {e}", "start": 0, "duration": 0}]
+        transcript_en_text = ""
+        if transcript_en_info and isinstance(transcript_en_info, list):
+            # On utilise le premier fichier disponible
+            en_url = transcript_en_info[0].get("url")
+            if en_url:
+                resp = requests.get(en_url)
+                if resp.status_code == 200:
+                    transcript_en_text = resp.text
 
-    except TooManyRequests:
-        time.sleep(5)  # Attendre 5 secondes en cas de blocage
-        return get_transcript(video_id)  # Réessayer après la pause
+        # Pour le chinois, on teste plusieurs variantes (zh et zh-CN)
+        if 'zh' in subtitles:
+            transcript_ch_info = subtitles['zh']
+        elif 'zh-CN' in subtitles:
+            transcript_ch_info = subtitles['zh-CN']
+        elif 'zh' in auto_captions:
+            transcript_ch_info = auto_captions['zh']
+        elif 'zh-CN' in auto_captions:
+            transcript_ch_info = auto_captions['zh-CN']
+        else:
+            transcript_ch_info = None
 
-    except TranscriptsDisabled:
-        return {"error": "Les sous-titres sont désactivés pour cette vidéo."}
+        transcript_ch_text = ""
+        if transcript_ch_info and isinstance(transcript_ch_info, list):
+            zh_url = transcript_ch_info[0].get("url")
+            if zh_url:
+                resp = requests.get(zh_url)
+                if resp.status_code == 200:
+                    transcript_ch_text = resp.text
 
+        # Parser le contenu VTT pour obtenir des cues structurés
+        if transcript_en_text:
+            transcript_en_cues = parse_vtt(transcript_en_text)
+            save_transcript_to_db(video_id, 'en', repr(transcript_en_cues))
+        else:
+            transcript_en_cues = [{"text": "Aucune transcription anglaise trouvée.", "start": 0, "duration": 0}]
+
+        if transcript_ch_text:
+            transcript_ch_cues = parse_vtt(transcript_ch_text)
+            save_transcript_to_db(video_id, 'zh', repr(transcript_ch_cues))
+        else:
+            transcript_ch_cues = [{"text": "Aucune transcription chinoise trouvée.", "start": 0, "duration": 0}]
+
+        return {"en": transcript_en_cues, "ch": transcript_ch_cues}
     except Exception as e:
         return {"error": f"Erreur inattendue : {e}"}
-
-    return {"en": transcript_data_en, "ch": transcript_data_ch}
 
 @app.route('/', methods=['GET'])
 def index():
@@ -137,17 +211,15 @@ def send_message():
     # Préparer la requête à l'API Gemini en envoyant tout l'historique
     headers = {'Content-Type': 'application/json'}
 
-
-
     data = {
         "contents": [
             {
                 "role": "model",
-                "parts": [{"text": "Context : App de transcription youtube."}]  # Le contexte ajouté ici
+                "parts": [{"text": "Context : App de transcription youtube."}]
             },
             {
-                "role": "user",  # Message de l'utilisateur
-                "parts": [{"text": msg['text']} for msg in conversation_history]  # Historique des messages
+                "role": "user",
+                "parts": [{"text": msg['text']} for msg in conversation_history]
             }
         ]
     }
@@ -160,18 +232,14 @@ def send_message():
 
         if isinstance(gemini_response, dict) and "candidates" in gemini_response:
             candidates = gemini_response["candidates"]
-            
             if isinstance(candidates, list) and len(candidates) > 0:
                 content = candidates[0].get("content")
-                
-                # Vérifie si content est une simple string ou un objet
                 if isinstance(content, dict) and "parts" in content:
                     text_value = content["parts"][0].get("text", "Réponse vide.")
                 elif isinstance(content, str):
                     text_value = content
                 else:
                     text_value = "Réponse inattendue."
-
                 response_text = {"parts": [{"text": text_value}]}
             else:
                 response_text = {"parts": [{"text": "Aucune réponse valide reçue de l'IA."}]}
@@ -182,7 +250,6 @@ def send_message():
         print(f"Erreur : {e}")  # Debug pour voir l'erreur
         response_text = {"parts": [{"text": "Nous rencontrons actuellement un problème technique. Veuillez réessayer plus tard. Merci pour votre patience !"}]}
 
-    # Retourner la réponse et l'historique
     return jsonify({'gemini_response': response_text, 'history': conversation_history})
 
 if __name__ == '__main__':
