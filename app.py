@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, render_template, jsonify, redirect, url_for
 import requests
 from flask_sqlalchemy import SQLAlchemy
 import yt_dlp
@@ -10,7 +10,7 @@ import json
 app = Flask(__name__)
 
 # Récupération de la clé API depuis l'environnement (ou mettez-la en dur pour tester)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBiZONd6VA8y9zAd8vueZRo_IrPnn7iHlw")  # Remplacez par votre clé
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBiZONd6VA8y9zAd8vueZRo_IrPnn7iHlw")
 # URL de l'API Gemini avec la clé
 GEMINI_API_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
@@ -128,7 +128,6 @@ def get_transcript(video_id):
 
         transcript_en_text = ""
         if transcript_en_info and isinstance(transcript_en_info, list):
-            # On utilise le premier fichier disponible
             en_url = transcript_en_info[0].get("url")
             if en_url:
                 resp = requests.get(en_url)
@@ -196,21 +195,37 @@ def index():
                            youtube_url=youtube_url,
                            error_message=error_message)
 
+# ─────────────────────────────────────────────────────────────
+# Nouvelle route /search avec formulaire pour saisir une URL YouTube
+# ─────────────────────────────────────────────────────────────
+
+def normalize_youtube_url(url):
+    """
+    Normalise l'URL pour s'assurer que les URL mobiles (par exemple, m.youtube.com)
+    sont converties en URL desktop standard.
+    """
+    if "m.youtube.com" in url:
+        url = url.replace("m.youtube.com", "www.youtube.com")
+    return url
+
+@app.route('/search', methods=['GET', 'POST'])
+def search():
+    if request.method == 'POST':
+        youtube_url = request.form.get('youtube_url', '').strip()
+        # Normaliser l'URL si elle est mobile
+        youtube_url = normalize_youtube_url(youtube_url)
+        # Rediriger vers la route principale en passant l'URL en paramètre
+        return redirect(url_for('index', youtube_url=youtube_url))
+    return render_template('search.html')
+
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    # Récupérer le message et l'historique envoyé par le client
     message = request.form.get('message')
     history = request.form.get('history')
-    
-    # Convertir l'historique en liste d'objets (s'il existe)
     conversation_history = json.loads(history) if history else []
-    
-    # Ajouter le message de l'utilisateur à l'historique (seul le texte est conservé pour l'API)
     conversation_history.append({'text': message})
     
-    # Préparer la requête à l'API Gemini en envoyant tout l'historique
     headers = {'Content-Type': 'application/json'}
-
     data = {
         "contents": [
             {
@@ -227,9 +242,8 @@ def send_message():
     try:
         response = requests.post(GEMINI_API_ENDPOINT, json=data, headers=headers)
         gemini_response = response.json()
+        print(gemini_response)  # Debug
         
-        print(gemini_response)  # Debug pour voir la vraie structure
-
         if isinstance(gemini_response, dict) and "candidates" in gemini_response:
             candidates = gemini_response["candidates"]
             if isinstance(candidates, list) and len(candidates) > 0:
@@ -247,7 +261,7 @@ def send_message():
             response_text = {"parts": [{"text": "Réponse inattendue du serveur."}]}
 
     except Exception as e:
-        print(f"Erreur : {e}")  # Debug pour voir l'erreur
+        print(f"Erreur : {e}")
         response_text = {"parts": [{"text": "Nous rencontrons actuellement un problème technique. Veuillez réessayer plus tard. Merci pour votre patience !"}]}
 
     return jsonify({'gemini_response': response_text, 'history': conversation_history})
